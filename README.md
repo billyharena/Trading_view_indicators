@@ -56,7 +56,7 @@ Ces paramètres sont des valeurs de départ, sans optimisation sur des données 
 
 Le score logistique n'est pas une probabilité de gain calibrée. La précision
 directionnelle ne mesure ni les frais, ni le spread, ni le slippage, ni le
-rapport gain/perte. Aucun stop, objectif ou résultat de backtest n'est simulé.
+rapport gain/perte. Les niveaux SL/TP ajoutés sont indicatifs ; aucun résultat de backtest n'est simulé.
 L'indicateur n'intègre ni calendrier économique ni spread temps réel. Le modèle
 est réappris sur l'historique chargé : changer de flux, d'unité, de paramètres
 ou de profondeur d'historique peut changer les résultats.
@@ -146,5 +146,50 @@ Pine, le Bar Replay ou la validation en temps réel, qui restent à effectuer.
    clôture M5. Comparer les marqueurs après rechargement avec le même historique.
 
 Ces filtres n'ont pas été optimisés ou backtestés sur XAUUSD. Ce script ne gère
-ni les sorties, ni les coûts d'exécution, ni les annonces économiques ; il ne
+ni l'exécution des sorties, ni les coûts d'exécution, ni les annonces économiques ; il ne
 mesure pas la rentabilité et ne fixe pas de durée de détention.
+
+## Entrée, SL et TP dans les deux indicateurs
+
+Chaque nouveau signal confirmé crée trois niveaux horizontaux sur le graphique
+de prix, avec une étiquette et le prix exact : entrée en cyan, SL en rouge,
+TP en vert. Le préfixe PROBA ou MTF identifie l'indicateur. Le panneau de
+probabilité reste séparé : seuls les niveaux sont dessinés sur les prix.
+
+| Paramètre | Valeur par défaut |
+| --- | --- |
+| Entrée indicative | Clôture de la bougie du signal |
+| Distance SL | 1,5 × ATR 14 de la bougie précédente |
+| Distance TP | 2 × distance entrée–SL |
+| Longueur du dessin | 20 barres, réglable de 1 à 500 |
+
+Pour un achat : SL sous l'entrée et TP au-dessus. Pour une vente : SL au-dessus
+et TP en dessous. Le risque est arrondi au tick supérieur et l'objectif au tick
+le plus proche, avec au moins un tick de distance pour chacun ; le ratio réel
+peut donc différer légèrement du réglage. Tous les prix respectent le tick du symbole.
+
+Les niveaux restent figés même si le cours ou l'ATR change. Le signal suivant
+remplace les trois dessins précédents, quel que soit son sens. Désactiver
+« Afficher entrée / SL / TP » masque les dessins sans supprimer les signaux ou
+leurs niveaux dans les alertes. La longueur du dessin n'est ni une expiration
+d'ordre ni une recommandation de durée de détention : les repères restent
+visibles à leur emplacement historique jusqu'au signal suivant.
+
+L'entrée est une référence théorique à la clôture, pas un prix d'exécution
+garanti. Les scripts ne placent aucun ordre, ne suivent aucune position et ne
+détectent pas les SL/TP touchés. La statistique de PROBA continue à mesurer la
+direction de la prochaine bougie, pas l'atteinte du TP avant le SL ; les niveaux
+ATR ne modifient pas cet horizon prédictif. Les paramètres ne sont pas optimisés.
+
+Recréer les alertes après installation de cette version : leurs messages
+incluent désormais l'entrée, le SL et le TP. Les niveaux sont transmis via des
+plots cachés, indépendamment de l'option d'affichage.
+
+Validation TradingView complémentaire : compiler les deux scripts, vérifier un
+achat puis une vente, comparer les étiquettes aux alertes, observer que les prix
+restent fixes entre deux signaux et que le signal suivant remplace les dessins.
+Dans PROBA, vérifier que les niveaux apparaissent sur le graphique de prix et
+ne modifient pas l'échelle du panneau de probabilité.
+
+Références Pine : [dessins et force_overlay](https://www.tradingview.com/pine-script-docs/visuals/lines-and-boxes/)
+et [plots cachés utilisés dans les alertes](https://tradingview.com/pine-script-docs/concepts/plots/).

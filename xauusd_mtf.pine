@@ -14,6 +14,10 @@ showEMA = input.bool(true, "Afficher EMA")
 maxExtension = input.float(1.5, "Écart maximal à EMA rapide (ATR)", minval=0.1, step=0.1, group="Scalping")
 maxRange = input.float(2.5, "Amplitude maximale de la bougie (ATR)", minval=0.5, step=0.1, group="Scalping")
 cooldown = input.int(3, "Barres sans signal après une alerte", minval=0, group="Scalping")
+showLevels = input.bool(true, "Afficher entrée / SL / TP du dernier signal", group="Entrée / SL / TP")
+stopATR = input.float(1.5, "Distance SL (multiple ATR 14 précédent)", minval=0.1, step=0.1, group="Entrée / SL / TP")
+targetRR = input.float(2.0, "Objectif TP (multiple du risque)", minval=0.1, step=0.1, group="Entrée / SL / TP")
+levelBars = input.int(20, "Longueur des niveaux (barres, affichage seul)", minval=1, maxval=500, group="Entrée / SL / TP")
 
 // Le graphique doit etre en 5 minutes
 if timeframe.in_seconds() != 300
@@ -194,12 +198,49 @@ plotshape(sellSignal, title="Signal baissier",
      textcolor=color.white, size=size.tiny)
 
 // ============================================
+int planDirection = buySignal ? 1 : sellSignal ? -1 : 0
+string planPrefix = "MTF"
+// Niveaux indicatifs du dernier signal : figés à la clôture, sans suivi d'ordre.
+var float entryPrice = na
+var float stopPrice = na
+var float targetPrice = na
+var planLines = array.new_line()
+var planLabels = array.new_label()
+if barstate.isconfirmed and planDirection != 0
+    entryPrice := math.round_to_mintick(close)
+    // Arrondi en ticks : risque et objectif restent au moins à un tick.
+    riskTicks = math.max(1.0, math.ceil(atrRef * stopATR / syminfo.mintick))
+    rewardTicks = math.max(1.0, math.round(riskTicks * targetRR))
+    stopPrice := math.round_to_mintick(entryPrice - planDirection * riskTicks * syminfo.mintick)
+    targetPrice := math.round_to_mintick(entryPrice + planDirection * rewardTicks * syminfo.mintick)
+    for oldLine in planLines
+        line.delete(oldLine)
+    for oldLabel in planLabels
+        label.delete(oldLabel)
+    array.clear(planLines)
+    array.clear(planLabels)
+    if showLevels
+        prices = array.from(entryPrice, stopPrice, targetPrice)
+        names = array.from(planDirection == 1 ? "Entrée ACHAT" : "Entrée VENTE", "SL", "TP")
+        colors = array.from(color.aqua, color.red, color.lime)
+        for i = 0 to 2
+            levelPrice = array.get(prices, i)
+            levelColor = array.get(colors, i)
+            array.push(planLines, line.new(bar_index, levelPrice, bar_index + levelBars, levelPrice, color=levelColor, width=2, force_overlay=true))
+            levelText = planPrefix + " " + array.get(names, i) + " " + str.tostring(levelPrice, format.mintick)
+            array.push(planLabels, label.new(bar_index + levelBars, levelPrice, levelText, style=label.style_label_left, color=levelColor, textcolor=color.black, size=size.small, force_overlay=true))
+
+// Séries cachées pour transmettre les niveaux exacts aux alertes, sans changer l'échelle.
+plot(planDirection != 0 ? entryPrice : na, "Plan Entry", display=display.none)
+plot(planDirection != 0 ? stopPrice : na, "Plan SL", display=display.none)
+plot(planDirection != 0 ? targetPrice : na, "Plan TP", display=display.none)
+
 // ALERTES TRADINGVIEW
 // ============================================
 alertcondition(buySignal,
      title="XAUUSD - Achat MTF confirmé",
-     message="ACHAT MTF | {{ticker}} | {{interval}} | clôture {{close}} | M5/M15 alignés avec le biais global.")
+     message='ACHAT MTF | {{ticker}} | {{interval}} | Entrée indicative {{plot("Plan Entry")}} | SL {{plot("Plan SL")}} | TP {{plot("Plan TP")}}')
 
 alertcondition(sellSignal,
      title="XAUUSD - Vente MTF confirmée",
-     message="VENTE MTF | {{ticker}} | {{interval}} | clôture {{close}} | M5/M15 alignés avec le biais global.")
+     message='VENTE MTF | {{ticker}} | {{interval}} | Entrée indicative {{plot("Plan Entry")}} | SL {{plot("Plan SL")}} | TP {{plot("Plan TP")}}')
