@@ -1,0 +1,205 @@
+//@version=6
+indicator("XAUUSD MTF - Confluence scalping", shorttitle="GOLD MTF", overlay=true)
+
+// ============================================
+// PARAMETRES
+// ============================================
+fastLen = input.int(21, "EMA rapide", minval=1)
+slowLen = input.int(55, "EMA lente", minval=2)
+rsiLen = input.int(14, "RSI", minval=2)
+minADX = input.float(18.0, "ADX minimum", minval=5)
+minScore = input.int(3, "Score minimum par periode", minval=1, maxval=5)
+globalThreshold = input.int(25, "Seuil global sur 50", minval=1, maxval=50)
+showEMA = input.bool(true, "Afficher EMA")
+maxExtension = input.float(1.5, "Écart maximal à EMA rapide (ATR)", minval=0.1, step=0.1, group="Scalping")
+maxRange = input.float(2.5, "Amplitude maximale de la bougie (ATR)", minval=0.5, step=0.1, group="Scalping")
+cooldown = input.int(3, "Barres sans signal après une alerte", minval=0, group="Scalping")
+
+// Le graphique doit etre en 5 minutes
+if timeframe.in_seconds() != 300
+    runtime.error("Selectionnez le graphique 5 minutes.")
+if fastLen >= slowLen
+    runtime.error("La période EMA rapide doit être inférieure à la période EMA lente.")
+
+// ============================================
+// CALCUL DU SCORE DE TENDANCE
+// ============================================
+f_score() =>
+    emaFast = ta.ema(close, fastLen)
+    emaSlow = ta.ema(close, slowLen)
+    rsiVal = ta.rsi(close, rsiLen)
+    [macdLine, macdSignal, _] = ta.macd(close, 12, 26, 9)
+    [diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+
+    float score = 0.0
+    score += close > emaSlow ? 1.0 : close < emaSlow ? -1.0 : 0.0
+    score += emaFast > emaSlow ? 1.0 : emaFast < emaSlow ? -1.0 : 0.0
+    score += rsiVal > 55 ? 1.0 : rsiVal < 45 ? -1.0 : 0.0
+    score += macdLine > macdSignal ? 1.0 : macdLine < macdSignal ? -1.0 : 0.0
+    score += diPlus > diMinus ? 1.0 : diPlus < diMinus ? -1.0 : 0.0
+
+    bool ready = not na(emaFast) and not na(emaSlow) and not na(rsiVal) and not na(macdLine) and not na(macdSignal) and not na(diPlus) and not na(diMinus) and not na(adxVal)
+    ready ? (adxVal >= minADX ? score : 0.0) : na
+
+// ============================================
+// ANALYSE MULTI-TIMEFRAME
+// Donnees des bougies cloturees uniquement
+// ============================================
+// M5 courant : utilisé uniquement à sa clôture pour les décisions et le tableau.
+score5 = f_score()
+
+[score15, closed15] = request.security(
+     syminfo.tickerid, "15", [f_score()[1], time_close[1]],
+     lookahead=barmerge.lookahead_on)
+
+[score60, closed60] = request.security(
+     syminfo.tickerid, "60", [f_score()[1], time_close[1]],
+     lookahead=barmerge.lookahead_on)
+
+[score240, closed240] = request.security(
+     syminfo.tickerid, "240", [f_score()[1], time_close[1]],
+     lookahead=barmerge.lookahead_on)
+
+// ============================================
+// SCORE GLOBAL PONDERE
+// 5m = poids 1, 15m = 2, 1h = 3, 4h = 4
+// ============================================
+combined = score5 + score15 * 2.0 + score60 * 3.0 + score240 * 4.0
+
+int globalBias = na(combined) ? 0 :
+     combined >= globalThreshold ? 1 :
+     combined <= -globalThreshold ? -1 : 0
+
+// ============================================
+// COULEURS ET TEXTES
+// ============================================
+f_bias(float s) =>
+    na(s) ? 0 : s >= minScore ? 1 : s <= -minScore ? -1 : 0
+
+f_text(int b) =>
+    b == 1 ? "HAUSSIER" : b == -1 ? "BAISSIER" : "NEUTRE"
+
+f_color(int b) =>
+    b == 1 ? color.new(color.green, 25) :
+     b == -1 ? color.new(color.red, 25) :
+     color.new(color.gray, 50)
+
+// Un biais de fond ne suffit pas : M5 ET M15 doivent confirmer le même sens.
+emaFastChart = ta.ema(close, fastLen)
+emaSlowChart = ta.ema(close, slowLen)
+atrRef = ta.atr(14)[1]
+dataReady = not na(combined) and not na(atrRef) and atrRef > 0
+alignedLong = globalBias == 1 and f_bias(score5) == 1 and f_bias(score15) == 1
+alignedShort = globalBias == -1 and f_bias(score5) == -1 and f_bias(score15) == -1
+rangeOk = dataReady and high - low <= maxRange * atrRef
+extensionOk = dataReady and math.abs(close - emaFastChart) <= maxExtension * atrRef
+int setup = dataReady and rangeOk and extensionOk ? (alignedLong ? 1 : alignedShort ? -1 : 0) : 0
+
+// Une alerte par séquence valide. Une séquence apparue pendant la pause reste
+// éligible à son expiration si elle est encore valide, sans répéter les alertes.
+var int lastSignalBar = na
+var int emittedDirection = 0
+pauseOk = na(lastSignalBar) or bar_index - lastSignalBar > cooldown
+bool buySignal = false
+bool sellSignal = false
+if barstate.isconfirmed
+    if setup == 0 or setup != nz(setup[1], 0)
+        emittedDirection := 0
+    if setup != 0 and setup != emittedDirection and pauseOk
+        buySignal := setup == 1
+        sellSignal := setup == -1
+        emittedDirection := setup
+        lastSignalBar := bar_index
+
+string reason = not dataReady ? "Historique insuffisant" : globalBias == 0 ? "Biais global neutre" : not (alignedLong or alignedShort) ? "M5 / M15 non alignés" : not rangeOk ? "Bougie trop ample" : not extensionOk ? "Prix trop éloigné EMA" : buySignal or sellSignal ? "Nouvelle confluence confirmée" : not pauseOk ? "Pause entre signaux" : "Signal déjà émis pour cette séquence"
+
+// ============================================
+// TABLEAU MULTI-TIMEFRAME
+// ============================================
+var table dashboard = table.new(
+     position.top_right, 4, 10, bgcolor=color.new(color.black, 15), border_width=1)
+
+f_row(table t, int r, string tf, float s, int closedAt) =>
+    int b = f_bias(s)
+    color bg = f_color(b)
+    string label = na(s) ? "ATTENTE" : f_text(b)
+    string scoreTxt = na(s) ? "--" : str.tostring(s, "#") + "/5"
+
+    table.cell(t, 0, r, tf, text_color=color.white,
+         bgcolor=color.black)
+    table.cell(t, 1, r, label, text_color=color.white,
+         bgcolor=bg)
+    table.cell(t, 2, r, scoreTxt, text_color=color.white,
+         bgcolor=bg)
+    table.cell(t, 3, r, na(closedAt) ? "--" : str.format_time(closedAt, "dd/MM HH:mm", "UTC"), text_color=color.silver)
+
+// Snapshot cohérent : toutes les lignes correspondent à la même clôture M5.
+if barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
+    table.cell(dashboard, 0, 0, "PERIODE",
+         bgcolor=color.black, text_color=color.white)
+    table.cell(dashboard, 1, 0, "TENDANCE",
+         bgcolor=color.black, text_color=color.white)
+    table.cell(dashboard, 2, 0, "SCORE",
+         bgcolor=color.black, text_color=color.white)
+    table.cell(dashboard, 3, 0, "CLÔTURE UTC", bgcolor=color.black, text_color=color.white)
+
+    f_row(dashboard, 1, "5 MIN", score5, time_close)
+    f_row(dashboard, 2, "15 MIN", score15, closed15)
+    f_row(dashboard, 3, "1 HEURE", score60, closed60)
+    f_row(dashboard, 4, "4 HEURES", score240, closed240)
+
+    color bgGlobal = f_color(globalBias)
+    string globalTxt = na(combined) ? "ATTENTE" : f_text(globalBias)
+    string forceTxt = na(combined) ? "--" : str.tostring(combined, "#") + " / 50"
+
+    table.cell(dashboard, 0, 5, "GLOBAL",
+         bgcolor=color.black, text_color=color.white)
+    table.cell(dashboard, 1, 5, globalTxt,
+         bgcolor=bgGlobal, text_color=color.white)
+    table.cell(dashboard, 2, 5, forceTxt,
+         bgcolor=bgGlobal, text_color=color.white)
+    table.cell(dashboard, 3, 5, "Pas une probabilité", text_color=color.silver)
+    color decisionColor = f_color(buySignal ? 1 : sellSignal ? -1 : 0)
+    table.cell(dashboard, 0, 6, "SIGNAL M5", text_color=color.white, bgcolor=decisionColor)
+    table.cell(dashboard, 1, 6, buySignal ? "ACHAT" : sellSignal ? "VENTE" : "ATTENDRE", text_color=color.white, bgcolor=decisionColor)
+    table.cell(dashboard, 0, 7, "MOTIF", text_color=color.white)
+    table.cell(dashboard, 1, 7, reason, text_color=color.white)
+    table.cell(dashboard, 0, 8, "ATR précédent", text_color=color.silver)
+    table.cell(dashboard, 1, 8, str.tostring(atrRef, format.mintick), text_color=color.silver)
+
+if barstate.islast
+    table.cell(dashboard, 0, 9, "ÉTAT", text_color=color.silver)
+    table.cell(dashboard, 1, 9, barstate.isconfirmed ? "Clôture confirmée" : "Bougie en cours : dernière décision clôturée", text_color=color.silver)
+
+// ============================================
+// MOYENNES MOBILES SUR LE GRAPHIQUE
+// ============================================
+plot(showEMA ? emaFastChart : na,
+     title="EMA rapide", color=color.aqua, linewidth=2)
+
+plot(showEMA ? emaSlowChart : na,
+     title="EMA lente", color=color.orange, linewidth=2)
+
+// ============================================
+// SIGNAUX DE CONFLUENCE CONFIRMÉS
+// ============================================
+plotshape(buySignal, title="Signal haussier",
+     style=shape.labelup, location=location.belowbar,
+     color=color.green, text="ACHAT",
+     textcolor=color.white, size=size.tiny)
+
+plotshape(sellSignal, title="Signal baissier",
+     style=shape.labeldown, location=location.abovebar,
+     color=color.red, text="VENTE",
+     textcolor=color.white, size=size.tiny)
+
+// ============================================
+// ALERTES TRADINGVIEW
+// ============================================
+alertcondition(buySignal,
+     title="XAUUSD - Achat MTF confirmé",
+     message="ACHAT MTF | {{ticker}} | {{interval}} | clôture {{close}} | M5/M15 alignés avec le biais global.")
+
+alertcondition(sellSignal,
+     title="XAUUSD - Vente MTF confirmée",
+     message="VENTE MTF | {{ticker}} | {{interval}} | clôture {{close}} | M5/M15 alignés avec le biais global.")
